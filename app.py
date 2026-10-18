@@ -37,6 +37,13 @@ def init_state() -> None:
             st.session_state[key] = value
 
 
+def reset_to_start() -> None:
+    st.session_state.phase = "select"
+    st.session_state.quiz_ids = []
+    st.session_state.results = []
+    st.session_state.index = 0
+
+
 def current_question(bank: dict) -> dict:
     qid = st.session_state.quiz_ids[st.session_state.index]
     return bank["questions"][qid]
@@ -190,11 +197,8 @@ def show_summary() -> None:
             st.markdown(f"- {concept}")
     else:
         st.markdown("這一組沒有錯題。仍可以把同一主題換成另一種出題方式再練一次。")
-    if st.button("回到選題"):
-        st.session_state.phase = "select"
-        st.session_state.quiz_ids = []
-        st.session_state.results = []
-        st.session_state.index = 0
+    if st.button("回到開始"):
+        reset_to_start()
         st.rerun()
 
 
@@ -233,7 +237,11 @@ def main() -> None:
     bank = cached_bank()
     st.title("CFA Level I 練習")
     show_disclaimer()
-    page = st.sidebar.radio("頁面", ["練習", "題號對照"])
+    if st.sidebar.button("回到開始", width="stretch"):
+        reset_to_start()
+        st.session_state.page = "練習"
+        st.rerun()
+    page = st.sidebar.radio("頁面", ["練習", "題號對照"], key="page")
     if page == "題號對照":
         show_catalog(bank)
         return

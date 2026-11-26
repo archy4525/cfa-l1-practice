@@ -13,7 +13,7 @@ streamlit run app.py
 
 雲端版由 Streamlit Community Cloud 從 GitHub 啟動，進入點是 `app.py`。原始 PDF 只留在本機，不放進倉庫。
 
-側邊欄可以貼上你的教材，讓 DeepSeek 分成系列後出練習題。沒有金鑰時，既有題庫和「用既有題庫主題建立系列」仍可使用。金鑰放在 `.streamlit/secrets.toml`（可參考 `secrets.toml.example`）或環境變數 `DEEPSEEK_API_KEY`。選填 `APP_PASSWORD` 會在進入主畫面之前先要求密碼。作答紀錄寫在本機的 `cfa_gamebook_data.json`，這個檔不會進 Git；雲端請用畫面上的匯出與匯入。
+沒有金鑰時，既有題庫和「用既有題庫主題建立系列」仍可使用。金鑰放在 `.streamlit/secrets.toml`（可參考 `secrets.toml.example`）或環境變數 `DEEPSEEK_API_KEY`。選填 `APP_PASSWORD` 會在進入主畫面之前先要求密碼。作答紀錄寫在本機的 `cfa_gamebook_data.json`，這個檔不會進 Git；雲端請用畫面上的匯出與匯入。
 
 若要從 PDF 重建題庫，另外安裝 `requirements-build.txt`。
 

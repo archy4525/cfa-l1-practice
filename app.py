@@ -185,16 +185,6 @@ def sidebar(bank: dict) -> None:
             f"本輪 Token：輸入 {usage.get('prompt', 0)}　輸出 {usage.get('completion', 0)}　合計 {usage.get('total', 0)}"
         )
         st.divider()
-        st.header("教材")
-        st.text_area("貼上教材或筆記", key="tutor_paste", height=140)
-        st.file_uploader(
-            "上傳 .txt、.md、.pdf、.json 或 .csv",
-            type=["txt", "md", "pdf", "json", "csv"],
-            accept_multiple_files=True,
-            key="tutor_uploads",
-        )
-        if st.button("整理並分類成系列", width="stretch"):
-            classify(bank)
         if st.button("用既有題庫主題建立系列", width="stretch"):
             add_local_series(bank)
         rows = record().get("series", [])
@@ -364,7 +354,7 @@ def tab_build(bank: dict) -> None:
     st.caption("練習由你的教材和既有題庫生成，不是 CFA Institute 官方題。")
     rows = record().get("series", [])
     if not rows:
-        st.info("側邊欄可以貼教材後分類，或直接用既有題庫主題建立系列。後者不會花 Token。")
+        st.info("側邊欄可以按「用既有題庫主題建立系列」。這一步不會花 Token。")
     current_id = series["series_id"] if series else ""
     for row in rows:
         with st.expander(row["title"], expanded=row["series_id"] == current_id):

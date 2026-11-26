@@ -129,6 +129,7 @@ def show_question(bank: dict) -> None:
         st.session_state.results.append(quiz_logic.grade(bank, question["id"], choice))
         st.session_state.phase = "reveal"
         st.rerun()
+    open_question_chat(question, None)
 
 
 def show_reveal(bank: dict) -> None:
@@ -177,6 +178,7 @@ def show_reveal(bank: dict) -> None:
             st.session_state.index += 1
             st.session_state.phase = "ask"
         st.rerun()
+    open_question_chat(question, result)
 
 
 def show_summary() -> None:
@@ -200,6 +202,33 @@ def show_summary() -> None:
     if st.button("回到開始"):
         reset_to_start()
         st.rerun()
+
+
+def open_question_chat(question: dict, result: dict | None) -> None:
+    import app as workbench
+
+    if st.session_state.get("classic_chat_for") != question["id"]:
+        st.session_state.classic_chat_for = question["id"]
+        st.session_state.classic_followups = []
+    item = {
+        "item_id": question["id"],
+        "question": question["stem"],
+        "options": {letter: question["choices"][letter] for letter in "ABC" if letter in question["choices"]},
+        "correct_option": (result or {}).get("correct_letter", ""),
+        "explanation_plain": (result or {}).get("zh") or (result or {}).get("core_idea") or "",
+        "explanation_steps": "\n\n".join(
+            part
+            for part in (
+                (result or {}).get("steps") or "",
+                (result or {}).get("reasoning") or "",
+                (result or {}).get("core_idea") or "",
+            )
+            if part
+        ),
+        "series_id": question.get("topic_id") or "",
+        "series_title": question.get("topic_zh") or question.get("topic_en") or "",
+    }
+    workbench.render_question_chat(item, result is not None, "classic_followups")
 
 
 def show_catalog(bank: dict) -> None:

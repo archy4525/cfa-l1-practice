@@ -171,6 +171,7 @@ def sidebar(bank: dict) -> None:
     with st.sidebar:
         st.header("連線")
         st.selectbox("模型", ("deepseek-chat", "deepseek-reasoner"), key="tutor_model")
+        st.caption("chat 直接回答，比較快。reasoner 會先逐步推理，比較慢，適合計算。拉桿只影響 chat。")
         st.slider("temperature", 0.0, 1.5, 0.3, 0.1, key="tutor_temperature")
         if not secret_value("DEEPSEEK_API_KEY"):
             st.session_state.tutor_api_key = st.text_input(
@@ -264,7 +265,12 @@ def rerun_retry(bank: dict) -> None:
             action.get("parent") or "",
         )
     elif kind == "follow":
-        ask_follow(action.get("ask") or "")
+        ask_follow(
+            action.get("ask") or "",
+            action.get("item"),
+            bool(action.get("reveal", True)),
+            action.get("bucket") or "current_followups",
+        )
     elif kind == "diagnosis":
         diagnose(action.get("rows") or [])
     elif kind == "variant":
@@ -406,6 +412,7 @@ def tab_answer(bank: dict) -> None:
         if st.button("提交答案"):
             grade(item, choice)
             st.rerun()
+        render_question_chat(item, reveal_answer=False, bucket="current_followups")
         return
     correct = st.session_state.get("tutor_last_correct")
     st.success("答對了。") if correct else st.error(
@@ -430,21 +437,7 @@ def tab_answer(bank: dict) -> None:
     note = st.text_input("短備註", key="star-note")
     if st.button("⭐ 收藏這題"):
         star_current(item, tag, note)
-    st.divider()
-    st.markdown("**針對本題追問**")
-    for index, row in enumerate(st.session_state.current_followups):
-        st.markdown(f"問：{row['ask']}")
-        st.write(row["answer"])
-        if st.button("★ 存為重點筆記", key=f"note-follow-{index}"):
-            save_note(f"{row['ask']}\n{row['answer']}", selected_series(), "followup")
-    for shortcut in SHORTCUTS:
-        if st.button(shortcut, key=f"short-{shortcut}"):
-            ask_follow(shortcut)
-            st.rerun()
-    typed = st.text_input("自己的追問", key=f"follow-box-{item.get('item_id')}")
-    if st.button("送出追問") and typed.strip():
-        ask_follow(typed.strip())
-        st.rerun()
+    render_question_chat(item, reveal_answer=True, bucket="current_followups")
     if st.button("下一題"):
         take_next(bank)
         st.rerun()
@@ -463,24 +456,63 @@ def grade(item: dict, choice: str) -> None:
     persist()
 
 
-def ask_follow(ask: str) -> None:
-    item = record().get("current_item")
+def render_question_chat(item: dict, reveal_answer: bool, bucket: str) -> None:
+    history = st.session_state.setdefault(bucket, [])
+    st.divider()
+    st.markdown("**問 DeepSeek 這題**")
+    st.caption("在對話框打字，問這一題哪裡不懂。回覆用繁體中文。")
+    if not api_key():
+        st.info("側邊欄先填 DeepSeek API 金鑰，對話框才會回覆。")
+    for index, row in enumerate(history):
+        st.markdown(f"**你：** {row['ask']}")
+        st.write(row["answer"])
+        if st.button("★ 存為重點筆記", key=f"note-{bucket}-{index}"):
+            save_note(
+                f"{row['ask']}\n{row['answer']}",
+                {"series_id": item.get("series_id") or "", "title": item.get("series_title") or "未分類"},
+                "followup",
+            )
+    columns = st.columns(3)
+    for column, shortcut in zip(columns, SHORTCUTS):
+        if column.button(shortcut, key=f"short-{bucket}-{shortcut}"):
+            ask_follow(shortcut, item, reveal_answer, bucket)
+            st.rerun()
+    nonce = st.session_state.get(f"{bucket}-nonce", 0)
+    typed = st.text_area(
+        "對話框",
+        placeholder="例如：為什麼不能選 A？這一步的公式怎麼來的？",
+        key=f"chat-{bucket}-{nonce}",
+        height=90,
+    )
+    if st.button("送出", key=f"send-{bucket}") and typed.strip():
+        ask_follow(typed.strip(), item, reveal_answer, bucket)
+        if not st.session_state.tutor_error:
+            st.session_state[f"{bucket}-nonce"] = nonce + 1
+        st.rerun()
+
+
+def ask_follow(ask: str, item: dict | None = None, reveal_answer: bool = True, bucket: str = "current_followups") -> None:
+    item = item or record().get("current_item")
     if not item or not ask:
         return
+    history = st.session_state.setdefault(bucket, [])
     clear_error()
     try:
         with st.spinner("助教回覆中"):
             stream = call_chat(
-                tutor_engine.followup_messages(item, st.session_state.current_followups, ask),
+                tutor_engine.followup_messages(item, history, ask, reveal_answer),
                 stream=True,
             )
             answer = consume_stream(stream).strip()
         if not answer:
             raise TutorError("追問沒有收到文字。")
-        st.session_state.current_followups.append({"ask": ask, "answer": answer})
+        history.append({"ask": ask, "answer": answer})
         persist()
     except TutorError as exc:
-        show_error(exc, {"kind": "follow", "ask": ask})
+        show_error(
+            exc,
+            {"kind": "follow", "ask": ask, "reveal": reveal_answer, "bucket": bucket, "item": item},
+        )
 
 
 def wrong_rows() -> list[dict]:

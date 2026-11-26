@@ -411,14 +411,19 @@ def classify_messages(text: str, catalog: str) -> list[dict]:
     ]
 
 
-def followup_messages(item: dict, followups: list[dict], ask: str) -> list[dict]:
+def followup_messages(item: dict, followups: list[dict], ask: str, reveal_answer: bool = True) -> list[dict]:
     options = "\n".join(f"{letter}. {text}" for letter, text in item["options"].items())
-    stable = (
-        f"題目：{item['question']}\n{options}\n"
-        f"正確答案：{item['correct_option']}\n"
-        f"白話：{item.get('explanation_plain', '')[:400]}\n"
-        f"拆解：{item.get('explanation_steps', '')[:700]}"
-    )
+    if reveal_answer:
+        stable = (
+            f"題目：{item['question']}\n{options}\n"
+            f"正確答案：{item['correct_option']}\n"
+            f"白話：{item.get('explanation_plain', '')[:400]}\n"
+            f"拆解：{item.get('explanation_steps', '')[:700]}"
+        )
+        guard = "只根據這題已給的題幹、選項和詳解回答，不另加題庫外的考點。"
+    else:
+        stable = f"題目：{item['question']}\n{options}\n使用者還沒送出答案。"
+        guard = "使用者還沒作答。可以解釋觀念和算法，但不要說出正確選項的字母。"
     prior = followups[-3:]
     prior_text = "\n".join(f"問：{row['ask']}\n答：{row['answer']}" for row in prior) or "（還沒有追問）"
     dynamic = (
@@ -426,7 +431,7 @@ def followup_messages(item: dict, followups: list[dict], ask: str) -> list[dict]
         "只用繁體中文，直接回答，150 到 250 字。不要重寫整題。"
     )
     return [
-        {"role": "system", "content": "你是 CFA Level I 白話助教。只根據這題已給的題幹、選項和詳解回答，不另加題庫外的考點。"},
+        {"role": "system", "content": f"你是 CFA Level I 白話助教。{guard}"},
         {"role": "user", "content": stable},
         {"role": "assistant", "content": "只根據這一題回答。"},
         {"role": "user", "content": dynamic},

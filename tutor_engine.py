@@ -411,6 +411,51 @@ def classify_messages(text: str, catalog: str) -> list[dict]:
     ]
 
 
+AUDIT_VERDICTS = ("高度符合 CFA 真題", "部分偏題需留意", "偏離考綱或純背誦")
+
+
+def audit_messages(item: dict) -> list[dict]:
+    options = "\n".join(f"{letter}. {text}" for letter, text in item.get("options", {}).items())
+    explain = (item.get("explanation_plain") or "")[:800]
+    steps = (item.get("explanation_steps") or "")[:800]
+    ask = (
+        f"題幹：{item.get('question', '')}\n{options}\n"
+        f"參考答案：{item.get('correct_option') or '未提供'}\n"
+        f"解析：{explain or '未提供'}\n計算與選項說明：{steps or '未提供'}\n"
+        "請只評這一題像不像 CFA Level I 的問法。回傳 JSON，欄位為 "
+        "verdict、los_assessment、option_review、study_note。"
+        "verdict 必須剛好是這三句之一：高度符合 CFA 真題、部分偏題需留意、偏離考綱或純背誦。"
+        "los_assessment 寫對應考點，以及有沒有計算、比較或情境判斷的深度。"
+        "option_review 寫干擾選項有沒有考場鑑別度。"
+        "study_note 寫考場要留意的盲點；若偏題，寫真實考法應該怎麼理解。"
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 CFA Level I 練習題審題助教。只根據這一題的題幹、選項和參考解析作風格比對。"
+                "這不是 CFA Institute 的官方判定，也不表示這題會出現在官方考試。"
+                "只回傳 JSON，不要加開場白。"
+            ),
+        },
+        {"role": "user", "content": ask},
+    ]
+
+
+def normalize_audit(payload) -> dict:
+    raw = _as_dict(payload)
+    verdict = str(raw.get("verdict") or raw.get("符合度") or "").strip()
+    matched = next((name for name in AUDIT_VERDICTS if name in verdict), "")
+    if not matched:
+        raise TutorError("審核結果沒有落在三個符合度判定裡。請再審一次。")
+    return {
+        "verdict": matched,
+        "los_assessment": str(raw.get("los_assessment") or raw.get("考點") or "").strip(),
+        "option_review": str(raw.get("option_review") or raw.get("選項") or "").strip(),
+        "study_note": str(raw.get("study_note") or raw.get("提醒") or "").strip(),
+    }
+
+
 def followup_messages(item: dict, followups: list[dict], ask: str, reveal_answer: bool = True) -> list[dict]:
     options = "\n".join(f"{letter}. {text}" for letter, text in item["options"].items())
     if reveal_answer:
@@ -424,6 +469,9 @@ def followup_messages(item: dict, followups: list[dict], ask: str, reveal_answer
     else:
         stable = f"題目：{item['question']}\n{options}\n使用者還沒送出答案。"
         guard = "使用者還沒作答。可以解釋觀念和算法，但不要說出正確選項的字母。"
+    review = str(item.get("review_text") or "").strip()
+    if review:
+        stable += f"\n最新審核：{review[:900]}"
     prior = followups[-3:]
     prior_text = "\n".join(f"問：{row['ask']}\n答：{row['answer']}" for row in prior) or "（還沒有追問）"
     dynamic = (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -18,7 +19,7 @@ from tutor_engine import TutorError
 load_dotenv()
 
 TAGS = ("易錯陷阱", "重要觀念", "計算不熟")
-SHORTCUTS = ("換個更白話的例子", "把算式拆更細", "如果條件改變怎麼算")
+SHORTCUTS = ("用白話解釋", "拆解計算與選項", "這題合不合考場口味")
 
 
 def secret_value(name: str) -> str:
@@ -186,21 +187,6 @@ def sidebar(bank: dict) -> None:
             f"本輪 Token：輸入 {usage.get('prompt', 0)}　輸出 {usage.get('completion', 0)}　合計 {usage.get('total', 0)}"
         )
         st.divider()
-        if st.button("用既有題庫主題建立系列", width="stretch"):
-            add_local_series(bank)
-        rows = record().get("series", [])
-        if rows:
-            labels = {row["series_id"]: row["title"] for row in rows}
-            current = st.session_state.get("tutor_series_id") or rows[0]["series_id"]
-            if current not in labels:
-                current = rows[0]["series_id"]
-            st.session_state.tutor_series_id = st.selectbox(
-                "目前系列",
-                list(labels),
-                index=list(labels).index(current),
-                format_func=lambda key: labels[key],
-            )
-        st.toggle("混合省流模式", value=True, key="tutor_mixed")
         if st.session_state.tutor_error:
             st.error(st.session_state.tutor_error)
             if st.session_state.tutor_retry and st.button("重試剛才的請求", width="stretch"):
@@ -271,6 +257,8 @@ def rerun_retry(bank: dict) -> None:
             bool(action.get("reveal", True)),
             action.get("bucket") or "current_followups",
         )
+    elif kind == "audit":
+        run_audit(action.get("item") or {})
     elif kind == "diagnosis":
         diagnose(action.get("rows") or [])
     elif kind == "variant":
@@ -376,13 +364,8 @@ def tab_build(bank: dict) -> None:
     unseen = len(tutor_engine.unseen_local(record(), series, bank))
     pooled = sum(1 for item in record().get("pool", []) if item.get("series_id") == series["series_id"])
     st.write(f"目前主線：{series['title']}　Lv.{level}　本地未做 {unseen} 題　題池 {pooled} 題")
-    left, middle, right = st.columns(3)
-    if left.button("下一題（先用本地）", width="stretch"):
+    if st.button("下一題（先用本地）", width="stretch"):
         take_next(bank)
-    if middle.button("AI 生成 1 題", width="stretch"):
-        generate(bank, 1)
-    if right.button("AI 一次生成 3 題", width="stretch"):
-        generate(bank, 3)
 
 
 def render_item(item: dict) -> None:
@@ -552,8 +535,6 @@ def tab_review(bank: dict) -> None:
     }
     chosen = st.selectbox("挑一題出變形題", list(labels), format_func=lambda key: labels[key])
     target = next(row for row in rows if row["history_id"] == chosen)
-    if st.button("針對錯題出變形題"):
-        variant_from(target, bank)
     if st.button("時段錯題白話總診斷"):
         diagnose(rows)
     if st.session_state.tutor_diagnosis:
@@ -613,16 +594,7 @@ def tab_library() -> None:
                 st.caption(row["note"])
             st.write(item.get("question") or "")
             st.caption(f"答案 {item.get('correct_option', '')}　{item.get('memory_hook') or ''}")
-            left, right = st.columns(2)
-            if left.button("🔄 出類似變形題", key=f"var-{row['star_id']}"):
-                fake = {
-                    "history_id": "",
-                    "series_id": item.get("series_id"),
-                    "los_focus": item.get("los_focus"),
-                    "angle": item.get("angle"),
-                }
-                variant_from(fake, cached_bank())
-            if right.button("移除收藏", key=f"drop-{row['star_id']}"):
+            if st.button("移除收藏", key=f"drop-{row['star_id']}"):
                 record()["starred_questions"] = [
                     kept for kept in stars if kept.get("star_id") != row["star_id"]
                 ]
@@ -675,8 +647,177 @@ def cached_bank() -> dict:
     return quiz_logic.load_bank()
 
 
+def review_context(audit: dict) -> str:
+    return "\n".join(
+        part
+        for part in (
+            audit.get("verdict") or "",
+            audit.get("los_assessment") or "",
+            audit.get("option_review") or "",
+            audit.get("study_note") or "",
+        )
+        if part
+    )
+
+
+def show_audit(audit: dict) -> None:
+    verdict = audit.get("verdict") or ""
+    if verdict.startswith("高度"):
+        st.success(verdict)
+    elif verdict.startswith("部分"):
+        st.warning(verdict)
+    else:
+        st.error(verdict)
+    st.markdown("**考點與題型評估**")
+    st.write(audit.get("los_assessment") or "")
+    st.markdown("**選項與陷阱檢視**")
+    st.write(audit.get("option_review") or "")
+    st.markdown("**學習／改寫提醒**")
+    st.write(audit.get("study_note") or "")
+    st.caption("這是問法風格的比對，不是 CFA Institute 的官方判定。")
+
+
+def run_audit(item: dict) -> None:
+    if not item or not item.get("question"):
+        show_error(TutorError("請先選定或貼上一題。"), None)
+        return
+    clear_error()
+    try:
+        with st.spinner("正在審核這一題"):
+            raw = call_chat(tutor_engine.audit_messages(item))
+            audit = tutor_engine.normalize_audit(tutor_engine.parse_json_payload(raw))
+        st.session_state.setdefault("bench_reviews", {})[item["item_id"]] = audit
+        persist()
+    except TutorError as exc:
+        show_error(exc, {"kind": "audit", "item": item})
+
+
+def pasted_item() -> dict | None:
+    stem = st.text_area("題幹", key="bench_stem", height=140)
+    letters = {}
+    for letter in "ABCD":
+        text = st.text_input(f"選項 {letter}", key=f"bench_opt_{letter}").strip()
+        if text:
+            letters[letter] = text
+    available = list(letters) or ["A"]
+    correct = st.selectbox("參考答案", available, key="bench_correct")
+    explanation = st.text_area("參考解析", key="bench_explain", height=100)
+    if not stem.strip() or len(letters) < 2:
+        return None
+    if correct not in letters:
+        correct = next(iter(letters))
+    digest = hashlib.sha1(f"{stem}|{correct}|{explanation}".encode("utf-8")).hexdigest()[:10]
+    return {
+        "item_id": f"paste-{digest}",
+        "question": stem.strip(),
+        "options": letters,
+        "correct_option": correct,
+        "explanation_plain": explanation.strip(),
+        "explanation_steps": "",
+        "series_id": "paste",
+        "series_title": "貼上的題目",
+    }
+
+
+def bank_choice_item(bank: dict) -> dict | None:
+    subjects = classic_quiz.subject_ids(bank)
+    subject_id = st.selectbox(
+        "科目",
+        subjects,
+        format_func=lambda key: classic_quiz.subject_label(bank, key),
+        key="bench_subject",
+    )
+    topic_ids = classic_quiz.topics_in(bank, subject_id)
+    topic_id = st.selectbox(
+        "主題",
+        topic_ids,
+        format_func=lambda key: classic_quiz.topic_label(bank, key),
+        key=f"bench-topic-{subject_id}",
+    )
+    pool = [question for question in bank["questions"].values() if question["topic_id"] == topic_id]
+    pool.sort(key=lambda question: question["id"])
+    if not pool:
+        st.info("這個主題沒有題目。")
+        return None
+    ids = [question["id"] for question in pool]
+    if st.session_state.get("bench_jump") in ids:
+        st.session_state.bench_qid = st.session_state.pop("bench_jump")
+    elif st.session_state.get("bench_qid") not in ids:
+        st.session_state.bench_qid = ids[0]
+    qid = st.selectbox(
+        "題目",
+        ids,
+        format_func=lambda key: f"{key}　{bank['questions'][key]['stem'][:42]}",
+        key="bench_qid",
+    )
+    position = ids.index(qid)
+    previous, nxt = st.columns(2)
+    if previous.button("上一題", disabled=position == 0, width="stretch"):
+        st.session_state.bench_jump = ids[position - 1]
+        st.rerun()
+    if nxt.button("下一題", disabled=position + 1 >= len(ids), width="stretch"):
+        st.session_state.bench_jump = ids[position + 1]
+        st.rerun()
+    question = bank["questions"][qid]
+    solution = bank["solutions"].get(qid) or {}
+    why = solution.get("why_wrong") or {}
+    why_text = "\n".join(f"{letter}. {text}" for letter, text in why.items() if text)
+    steps = "\n\n".join(
+        part for part in (solution.get("steps") or "", solution.get("reasoning") or "", why_text) if part
+    )
+    return {
+        "item_id": qid,
+        "question": question["stem"],
+        "options": {letter: question["choices"][letter] for letter in "ABCD" if letter in question["choices"]},
+        "correct_option": solution.get("correct") or "",
+        "explanation_plain": solution.get("zh") or solution.get("core_idea") or "",
+        "explanation_steps": steps,
+        "series_id": question.get("topic_id") or "",
+        "series_title": question.get("topic_zh") or question.get("topic_en") or "",
+    }
+
+
+def tab_workbench(bank: dict) -> None:
+    st.subheader("刷題與審題")
+    st.caption("這裡只使用題庫裡的題，或你貼上的題。不會自動另出新題。")
+    mode = st.radio("題目來源", ("從題庫選", "貼上一題"), horizontal=True, key="bench_mode")
+    item = bank_choice_item(bank) if mode == "從題庫選" else pasted_item()
+    if item is None:
+        st.info("貼上題幹和至少兩個選項後，就可以作答、審核和提問。")
+        return
+    if st.session_state.get("bench_for") != item["item_id"]:
+        st.session_state.bench_for = item["item_id"]
+        st.session_state.bench_followups = []
+    st.markdown(item["question"])
+    for letter, text in item["options"].items():
+        st.markdown(f"**{letter}.** {text}")
+    if not item["correct_option"]:
+        st.warning("這一題沒有參考答案，仍可審核和提問。")
+    else:
+        picked = st.radio("我的答案", list(item["options"]), key=f"bench-pick-{item['item_id']}")
+        if st.button("顯示／比對參考答案"):
+            st.session_state[f"bench-show-{item['item_id']}"] = True
+        if st.session_state.get(f"bench-show-{item['item_id']}"):
+            correct = item["correct_option"]
+            if picked == correct:
+                st.success(f"和參考答案一致：{correct}")
+            else:
+                st.error(f"你選了 {picked}。參考答案是 {correct}。")
+            if item.get("explanation_plain"):
+                st.write(item["explanation_plain"])
+            if item.get("explanation_steps"):
+                st.write(item["explanation_steps"])
+    if st.button("🔍 審核這題是否符合 CFA 真題"):
+        run_audit(item)
+    audit = st.session_state.get("bench_reviews", {}).get(item["item_id"])
+    if audit:
+        show_audit(audit)
+        item = {**item, "review_text": review_context(audit)}
+    render_question_chat(item, reveal_answer=True, bucket="bench_followups")
+
+
 def main() -> None:
-    st.set_page_config(page_title="CFA 練習工作台", layout="centered")
+    st.set_page_config(page_title="CFA 刷題與審題", layout="centered")
     init()
     if not password_gate():
         return
@@ -684,21 +825,15 @@ def main() -> None:
     if st.session_state.get("tutor_boot_error"):
         st.warning(st.session_state.tutor_boot_error)
     sidebar(bank)
-    st.title("CFA 練習工作台")
-    st.caption("既有題庫是依你的教材驗算過的練習。AI 題只在你按下生成時，依選定系列的摘要現做。")
-    build, answer, review, library, classic = st.tabs(
-        ("系列與出題", "作答", "錯題複習", "收藏與筆記", "驗算題庫")
-    )
-    with build:
-        tab_build(bank)
-    with answer:
-        tab_answer(bank)
-    with review:
-        tab_review(bank)
-    with library:
-        tab_library()
+    st.title("CFA 刷題與審題")
+    st.caption("題目來自已整理的題庫，或你這次貼上的內容。DeepSeek 只在你按審核或提問時才會呼叫。")
+    workbench, classic, library = st.tabs(("刷題與審題", "驗算題庫", "收藏與筆記"))
+    with workbench:
+        tab_workbench(bank)
     with classic:
         classic_quiz.render_classic(bank)
+    with library:
+        tab_library()
 
 
 if __name__ == "__main__":

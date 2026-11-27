@@ -719,6 +719,30 @@ def pasted_item() -> dict | None:
     }
 
 
+def show_topic_intro(bank: dict, topic_id: str, pool: list[dict]) -> None:
+    info = quiz_logic.briefing(bank, topic_id, pool)
+    with st.expander(
+        f"本系列學習目標：{info['topic_id']} {info['title_en']}｜{info['title_zh']}",
+        expanded=True,
+    ):
+        st.markdown("**本組子主題**")
+        for subtopic in info["subtopics"]:
+            st.markdown(f"- {subtopic}")
+        st.markdown("**本組學習目標**")
+        for objective in info["objectives"]:
+            st.markdown(f"- {objective}")
+        st.markdown("**會用到的公式或觀念**")
+        for formula in info["formulas"]:
+            st.markdown(f"- {formula}")
+        level_text = "、".join(f"{name} {count} 題" for name, count in info["levels"].items())
+        type_text = "、".join(f"{name} {count} 題" for name, count in info["types"].items())
+        st.markdown(f"**題數** {info['count']}　**難度** {level_text}　**題型** {type_text}")
+        st.markdown(
+            f"**來源** {info['source_chapter']}；題庫章節 {info['question_section']}。"
+            "變化題使用同一章的觀念，數字與問法已更換。"
+        )
+
+
 def bank_choice_item(bank: dict) -> dict | None:
     subjects = classic_quiz.subject_ids(bank)
     subject_id = st.selectbox(
@@ -739,6 +763,16 @@ def bank_choice_item(bank: dict) -> dict | None:
     if not pool:
         st.info("這個主題沒有題目。")
         return None
+    if st.session_state.get("bench_last_topic") != topic_id:
+        st.session_state.bench_last_topic = topic_id
+        st.session_state[f"bench_ready_{topic_id}"] = False
+    show_topic_intro(bank, topic_id, pool)
+    if not st.session_state.get(f"bench_ready_{topic_id}"):
+        if st.button("開始作答", type="primary", key=f"bench-start-{topic_id}"):
+            st.session_state[f"bench_ready_{topic_id}"] = True
+            st.rerun()
+        st.caption("先看完上面的學習目標，再按開始作答。")
+        return None
     ids = [question["id"] for question in pool]
     if st.session_state.get("bench_jump") in ids:
         st.session_state.bench_qid = st.session_state.pop("bench_jump")
@@ -751,12 +785,15 @@ def bank_choice_item(bank: dict) -> dict | None:
         key="bench_qid",
     )
     position = ids.index(qid)
-    previous, nxt = st.columns(2)
+    previous, nxt, again = st.columns(3)
     if previous.button("上一題", disabled=position == 0, width="stretch"):
         st.session_state.bench_jump = ids[position - 1]
         st.rerun()
     if nxt.button("下一題", disabled=position + 1 >= len(ids), width="stretch"):
         st.session_state.bench_jump = ids[position + 1]
+        st.rerun()
+    if again.button("再看學習目標", width="stretch"):
+        st.session_state[f"bench_ready_{topic_id}"] = False
         st.rerun()
     question = bank["questions"][qid]
     solution = bank["solutions"].get(qid) or {}
@@ -783,7 +820,8 @@ def tab_workbench(bank: dict) -> None:
     mode = st.radio("題目來源", ("從題庫選", "貼上一題"), horizontal=True, key="bench_mode")
     item = bank_choice_item(bank) if mode == "從題庫選" else pasted_item()
     if item is None:
-        st.info("貼上題幹和至少兩個選項後，就可以作答、審核和提問。")
+        if mode == "貼上一題":
+            st.info("貼上題幹和至少兩個選項後，就可以作答、審核和提問。")
         return
     if st.session_state.get("bench_for") != item["item_id"]:
         st.session_state.bench_for = item["item_id"]
